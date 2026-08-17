@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ChatOpenAI } from '@langchain/openai';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
@@ -17,12 +17,13 @@ import { ExtractionResult } from './types/pipeline.types';
  * 实体 / 关系抽取服务
  *
  * <p>供 KG 建图使用：从每个 chunk 抽「实体 + 关系」，再写入 Neo4j。</p>
- * <p>ChatOpenAI + withStructuredOutput；未配置 API Key 或调用失败时抛错。</p>
+ * <p>ChatOpenAI.withStructuredOutput，不指定 method：qwen-plus 默认 jsonSchema。</p>
  *
  * <p>环境变量：OPENAI_API_KEY / OPENAI_BASE_URL / MODEL_NAME / KG_MAX_ENTITIES / KG_MAX_RELATIONS / KG_LLM_TIMEOUT_MS</p>
  */
 @Injectable()
 export class ExtractionService {
+  private readonly logger = new Logger(ExtractionService.name);
   /** 单 chunk 最多实体数，防止图爆炸 */
   private readonly maxEntities: number;
   private readonly maxRelations: number;
@@ -50,22 +51,22 @@ export class ExtractionService {
       config.get<string>('MODEL_NAME') ||
       config.get<string>('LLM_MODEL') ||
       'qwen-plus';
-    const timeout = Number(config.get('KG_LLM_TIMEOUT_MS', 20000));
+    const timeout = Number(config.get('KG_LLM_TIMEOUT_MS', 60000));
+    const timeoutMs = Number.isFinite(timeout) && timeout > 0 ? timeout : 60000;
 
     const llm = new ChatOpenAI({
       apiKey,
       model,
       temperature: 0.1,
-      timeout: Number.isFinite(timeout) && timeout > 0 ? timeout : 20000,
+      timeout: timeoutMs,
+      maxRetries: 0,
       // DashScope 走 Chat Completions，不要切 OpenAI Responses API
       useResponsesApi: false,
       configuration: { baseURL: baseUrl },
     });
 
-    // jsonMode：兼容 DashScope / qwen；schema 仍由 withStructuredOutput + Zod 校验解析
     this.structuredLlm = llm.withStructuredOutput(kgExtractionResultSchema, {
       name: 'extract_knowledge_graph',
-      method: 'jsonMode',
     });
   }
 
@@ -107,10 +108,14 @@ export class ExtractionService {
     );
     const user = `文档标题: ${documentTitle}\n章节: ${heading ?? '无'}\n\n内容:\n${content.slice(0, 4000)}`;
 
+    const started = Date.now();
     const parsed = await this.structuredLlm.invoke([
       new SystemMessage(system),
       new HumanMessage(user),
     ]);
+    this.logger.log(
+      `KG 抽取完成：title=${documentTitle}, elapsed=${Date.now() - started}ms, chars=${content.length}, entities=${parsed.entities?.length ?? 0}`,
+    );
 
     return this.toExtractionResult(parsed);
   }

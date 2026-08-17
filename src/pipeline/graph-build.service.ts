@@ -148,12 +148,21 @@ export class GraphBuildService implements OnModuleInit, OnModuleDestroy {
           },
         );
 
-        // ④ 抽实体关系并落图
-        const extracted = await this.extractionService.extract(
-          chunk.content,
-          chunk.heading,
-          doc.title,
-        );
+        // ④ 抽实体关系并落图；单块失败不阻断其余块（图已先清过）
+        let extracted;
+        try {
+          extracted = await this.extractionService.extract(
+            chunk.content,
+            chunk.heading,
+            doc.title,
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          this.logger.error(
+            `KG 抽取失败，跳过该块：documentId=${doc.id}, chunk=${chunk.chunkIndex}, ${message}`,
+          );
+          extracted = { entities: [], relations: [] };
+        }
         // 绑定当前块，writeExtraction 才能建 MENTIONS
         extracted.chunkId = chunk.chunkId;
         // 写入 Neo4j：实体节点 / MENTIONS / RELATED_TO

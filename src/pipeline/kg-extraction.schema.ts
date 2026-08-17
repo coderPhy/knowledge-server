@@ -60,7 +60,8 @@ export function normalizeRelationType(
 /** LLM 结构化输出：实体 */
 export const kgExtractedEntitySchema = z.object({
   name: z.string().describe('文中原文实体名'),
-  type: z.enum(KG_ENTITY_TYPES).describe('实体类型'),
+  // string 而非 enum：模型常返回中文类型或额外字段，交给 normalizeEntityType 归类
+  type: z.string().describe('实体类型').optional(),
   description: z.string().describe('简短描述，可空').optional(),
   aliases: z.array(z.string()).describe('别名').optional(),
 });
