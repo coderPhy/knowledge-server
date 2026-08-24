@@ -33,6 +33,7 @@ import {
   titleFromFilename,
 } from './parser/utils/markdown.util';
 import { DocumentReviewService } from './document-review.service';
+import { AuthUser } from '../auth/auth-user.interface';
 
 /**
  * 文档服务
@@ -63,7 +64,7 @@ export class DocumentService {
    * 流程：生成雪花 ID → 写 Mongo 正文（拿 ObjectId）→ 写 Postgres 元数据
    * 若 Postgres 写入失败，回滚删除已写入的 Mongo 正文，避免脏数据
    */
-  async create(dto: CreateDocumentDto) {
+  async create(dto: CreateDocumentDto, actor?: AuthUser) {
     const requestedStatus = dto.status ?? DocumentStatus.Draft;
     // 创建时不允许直接设为 Archived / PendingReview
     if (
@@ -107,7 +108,7 @@ export class DocumentService {
         summary: dto.summary,
         categoryId: dto.categoryId,
         teamId: dto.teamId,
-        authorId: dto.authorId,
+        authorId: dto.authorId ?? actor?.userId,
         coverImage: dto.coverImage,
         tags: dto.tags,
         status,
@@ -116,8 +117,8 @@ export class DocumentService {
         wordCount,
         // 创建即发布时，记录发布时间
         publishTime: status === DocumentStatus.Published ? new Date() : null,
-        createBy: dto.createBy,
-        updateBy: dto.createBy,
+        createBy: dto.createBy ?? actor?.userId,
+        updateBy: dto.createBy ?? actor?.userId,
         deleted: false,
       });
 
@@ -216,7 +217,7 @@ export class DocumentService {
    * - 仅改 summary：同步更新 Mongo contentSummary
    * - 其余字段只更新 Postgres 元数据
    */
-  async update(id: string, dto: UpdateDocumentDto) {
+  async update(id: string, dto: UpdateDocumentDto, actor?: AuthUser) {
     const doc = await this.em.findOne(DocumentEntity, {
       where: { id, deleted: false },
     });
@@ -294,6 +295,7 @@ export class DocumentService {
     if (dto.remark !== undefined) doc.remark = dto.remark;
     if (dto.isPublic !== undefined) doc.isPublic = dto.isPublic;
     if (dto.updateBy !== undefined) doc.updateBy = dto.updateBy;
+    else if (actor?.userId) doc.updateBy = actor.userId;
 
     const saved = await this.em.save(doc);
     const finalContent = newContent ?? (await this.loadContent(doc.contentId));
@@ -451,6 +453,7 @@ export class DocumentService {
   async uploadAndCreateDocument(
     file: Express.Multer.File,
     meta: UploadParseDto = {},
+    actor?: AuthUser,
   ) {
     if (!file?.buffer?.length) {
       throw new BadRequestException('文件不能为空');
@@ -502,18 +505,21 @@ export class DocumentService {
 
     const title = titleFromFilename(originalFilename);
 
-    const created = await this.create({
-      title,
-      content: parsedContent,
-      categoryId: meta.categoryId,
-      teamId: meta.teamId,
-      authorId: meta.authorId,
-      tags: meta.tags,
-      remark: meta.remark,
-      createBy: meta.createBy,
-      isPublic: meta.isPublic,
-      status: DocumentStatus.Draft,
-    });
+    const created = await this.create(
+      {
+        title,
+        content: parsedContent,
+        categoryId: meta.categoryId,
+        teamId: meta.teamId,
+        authorId: meta.authorId,
+        tags: meta.tags,
+        remark: meta.remark,
+        createBy: meta.createBy,
+        isPublic: meta.isPublic,
+        status: DocumentStatus.Draft,
+      },
+      actor,
+    );
 
     const previewLen = Math.min(200, parsedContent.length);
     const result = {

@@ -20,8 +20,12 @@ import { UpdateDocumentDto } from './dto/update-document.dto';
 import { QueryDocumentDto } from './dto/query-document.dto';
 import { UploadParseDto } from './dto/upload-parse.dto';
 import { QueryReviewTasksDto, ReviewDecisionDto } from './dto/review.dto';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import type { AuthUser } from '../auth/auth-user.interface';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { RoleCode } from '../common/constants/roles';
 
-/** 文档接口 */
+/** 文档接口（需 JWT；审核相关接口需 ROLE_REVIEWER 或 ROLE_ADMIN） */
 @Controller('documents')
 export class DocumentController {
   constructor(
@@ -31,8 +35,8 @@ export class DocumentController {
 
   /** 创建文档 */
   @Post()
-  create(@Body() dto: CreateDocumentDto) {
-    return this.documentService.create(dto);
+  create(@Body() dto: CreateDocumentDto, @CurrentUser() user: AuthUser) {
+    return this.documentService.create(dto, user);
   }
 
   /** 上传文件并解析为 Markdown，创建草稿（form-data 字段名: file） */
@@ -45,21 +49,24 @@ export class DocumentController {
   uploadAndParse(
     @UploadedFile() file: Express.Multer.File,
     @Body() meta: UploadParseDto,
+    @CurrentUser() user: AuthUser,
   ) {
     if (!file) {
       throw new BadRequestException('请上传文件（form-data 字段名: file）');
     }
-    return this.documentService.uploadAndCreateDocument(file, meta);
+    return this.documentService.uploadAndCreateDocument(file, meta, user);
   }
 
   /** 审核待办列表（须在 @Get(':id') 之前注册，避免路由被 :id 吃掉） */
   @Get('reviews/tasks')
+  @Roles(RoleCode.REVIEWER, RoleCode.ADMIN)
   listReviewTasks(@Query() query: QueryReviewTasksDto) {
     return this.reviewService.listTasks(query);
   }
 
   /** 待审核数量（导航角标等） */
   @Get('reviews/tasks/pending-count')
+  @Roles(RoleCode.REVIEWER, RoleCode.ADMIN)
   pendingReviewCount() {
     return this.reviewService.getPendingCount();
   }
@@ -108,29 +115,33 @@ export class DocumentController {
 
   /** 审核通过 → 文档 Published + 重建索引 */
   @Post('reviews/tasks/:taskId/approve')
+  @Roles(RoleCode.REVIEWER, RoleCode.ADMIN)
   approveReview(
     @Param('taskId') taskId: string,
     @Body() dto: ReviewDecisionDto,
+    @CurrentUser() user: AuthUser,
   ) {
     return this.reviewService.approveReview(
       taskId,
-      dto.reviewerId,
-      dto.reviewerName,
+      user.userId,
+      user.realName ?? user.username,
       dto.reviewComment,
     );
   }
 
   /** 审核驳回 → 文档回 Draft，作者可修改后再次 submit */
   @Post('reviews/tasks/:taskId/reject')
+  @Roles(RoleCode.REVIEWER, RoleCode.ADMIN)
   rejectReview(
     @Param('taskId') taskId: string,
     @Body() dto: ReviewDecisionDto,
+    @CurrentUser() user: AuthUser,
   ) {
     return this.reviewService.rejectReview(
       taskId,
       dto.reviewComment ?? '',
-      dto.reviewerId,
-      dto.reviewerName,
+      user.userId,
+      user.realName ?? user.username,
     );
   }
 
@@ -142,8 +153,12 @@ export class DocumentController {
 
   /** 更新文档 */
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateDocumentDto) {
-    return this.documentService.update(id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateDocumentDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.documentService.update(id, dto, user);
   }
 
   /** 软删除文档 */

@@ -7,6 +7,10 @@ import { AppService } from './app.service';
 import { DocumentModule } from './document/document.module';
 import { DocumentEntity } from './document/entities/document.entity';
 import { DocumentReviewEntity } from './document/entities/document-review.entity';
+import { AuthModule } from './auth/auth.module';
+import { UserEntity } from './user/entities/user.entity';
+import { RoleEntity } from './user/entities/role.entity';
+import { UserRoleEntity } from './user/entities/user-role.entity';
 import { MqModule } from './mq/mq.module';
 import { PipelineModule } from './pipeline/pipeline.module';
 import { StorageModule } from './storage/storage.module';
@@ -26,7 +30,13 @@ import { StorageModule } from './storage/storage.module';
         username: config.get<string>('POSTGRES_USER', 'user'),
         password: config.get<string>('POSTGRES_PASSWORD', '123456'),
         database: config.get<string>('POSTGRES_DB', 'knowledge_hub'),
-        entities: [DocumentEntity, DocumentReviewEntity],
+        entities: [
+          DocumentEntity,
+          DocumentReviewEntity,
+          UserEntity,
+          RoleEntity,
+          UserRoleEntity,
+        ],
         synchronize: false,
       }),
     }),
@@ -40,6 +50,7 @@ import { StorageModule } from './storage/storage.module';
       }),
     }),
     DocumentModule,
+    AuthModule,
   ],
   controllers: [AppController],
   providers: [AppService],
