@@ -1,6 +1,6 @@
 # 用户鉴权测试 curl
 
-简化方案：**注册后立即可登录**（无邮箱激活）。文档接口默认需 JWT；审核接口需 `ROLE_REVIEWER` 或 `ROLE_ADMIN`。
+默认 **注册后立即可登录**（`REQUIRE_EMAIL_VERIFICATION=false`）。设为 `true` 时需邮箱激活。文档接口默认需 JWT；审核接口需 `ROLE_REVIEWER` 或 `ROLE_ADMIN`。
 
 ## 预置测试账号
 
@@ -61,7 +61,7 @@ curl -s -X POST "$BASE/auth/register" \
   -d '{
     "username": "zhangsan",
     "password": "123456",
-    "email": "zhangsan@company.com",
+    "email": "lingxiao_guang@foxmail.com",
     "realName": "张三"
   }' | jq
 ```
@@ -70,7 +70,37 @@ curl -s -X POST "$BASE/auth/register" \
 
 ---
 
-## 4. 刷新 Token
+## 4. 邮箱激活（REQUIRE_EMAIL_VERIFICATION=true 时）
+
+注册成功后会向邮箱发送激活链接，token 存 Redis（24 小时有效）。
+
+```bash
+ACTIVATION_TOKEN='替换成邮件中的 token'
+
+curl -s "$BASE/auth/verify-email?token=$ACTIVATION_TOKEN" | jq
+```
+
+---
+
+## 5. 忘记密码（两步，验证码存 Redis，10 分钟有效）
+
+需配置 `MAIL_*` 与 `REDIS_*`（见 `.env.example`）。
+
+```bash
+# 1. 发送验证码
+curl -s -X POST "$BASE/auth/password/reset/send-code" \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"lingxiao_guang@foxmail.com"}' | jq
+
+# 2. 重置密码（邮箱 + 验证码 + 新密码）
+curl -s -X POST "$BASE/auth/password/reset" \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"lingxiao_guang@foxmail.com","code":"123456","newPassword":"654321"}' | jq
+```
+
+---
+
+## 6. 刷新 Token
 
 ```bash
 REFRESH='替换成 login 返回的 refreshToken'
@@ -82,7 +112,18 @@ curl -s -X POST "$BASE/auth/refresh" \
 
 ---
 
-## 5. 审核员 ID 列表
+## 7. 退出登录
+
+```bash
+curl -s -X POST "$BASE/auth/logout" \
+  -H "Authorization: Bearer $TOKEN" | jq
+```
+
+无状态 JWT，服务端仅返回成功；客户端丢弃 accessToken / refreshToken 即可。
+
+---
+
+## 8. 审核员 ID 列表
 
 ```bash
 curl -s "$BASE/auth/reviewer-ids" \
@@ -91,7 +132,7 @@ curl -s "$BASE/auth/reviewer-ids" \
 
 ---
 
-## 6. 带 Token 调用文档接口（示例）
+## 9. 带 Token 调用文档接口（示例）
 
 上传 PDF 创建草稿（普通用户）：
 
@@ -117,4 +158,4 @@ curl -s -X POST "$BASE/documents/reviews/tasks/${TASK_ID}/approve" \
 
 未安装 `jq` 时去掉 `| jq` 即可。
 
-完整文档状态流转见 `curl-document-status.md`（需先 login 拿 token）。
+完整文档状态流转见 `curl-document-status.md`。用户/角色/团队管理见 `curl-users.md`。

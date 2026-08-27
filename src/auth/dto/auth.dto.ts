@@ -9,7 +9,7 @@ export class LoginDto {
   password: string;
 }
 
-/** 注册（简化：注册后 status=1，立即可登录） */
+/** 注册（默认注册后立即可登录；REQUIRE_EMAIL_VERIFICATION=true 时需邮箱激活） */
 export class RegisterDto {
   @IsString()
   username: string;
