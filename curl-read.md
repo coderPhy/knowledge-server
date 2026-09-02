@@ -6,7 +6,7 @@
 2. `PUT publish` 进入待审（默认需审核，status=3，仍搜不到）
 3. `reviewer` 审核通过 → 已发布（status=1），投递 MQ
 4. pipeline 异步写入 ES 全文索引和 Neo4j 图谱（等几秒）
-5. `POST /search` 查全文，`GET /graph/search` 查图谱节点
+5. `POST /search` 查全文，`GET /graph/search` 查图谱节点，`POST /rag/search` 查分块混合检索
 
 ```bash
 export BASE=http://localhost:3000
@@ -107,12 +107,11 @@ curl -s -X POST "$BASE/search" \
 
 可选：`categoryId`、`authorId`。
 
-已发布文档改稿后需再次发布（或免审更新）才会刷新索引。旧文档若仍是「前 1000 字」快照，重新发布一次即可索引进全文。
+已发布文档改稿后需再次发布（或免审更新）才会刷新索引。
 
 ## 2. 知识图谱
 
 ```bash
-# 关键词检索实体 / 文档 / 块
 curl -s --get "$BASE/graph/search" \
   --data-urlencode 'keyword=SRE' \
   --data-urlencode 'limit=50' \
@@ -129,3 +128,31 @@ curl -s "$BASE/graph/edges?limit=100" \
 ```
 
 `/graph/search` 匹配实体名/描述、文档标题/摘要、块标题/正文。`/graph/nodes` 为 `KnowledgeEntity` 列表，`/graph/edges` 为 `RELATED_TO`。Neo4j 不可用时返回空数组。
+
+## 3. RAG（/ai/chat）
+
+单篇 SOP 只能验证「能不能召回」，看不出跨文档排序。多文档发布与 `/rag/search`、`/ai/chat` 见 `curl-rag.md`。
+
+SOP 发布并完成索引后，三问即可。需权限码 `search`。
+
+```bash
+# 1. 原话
+curl -s -X POST "$BASE/ai/chat" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"灰度发布怎么做","topK":5}' | jq '{answer, sources}'
+
+# 2. 换说法（问句里没有「灰度发布」）
+curl -s -X POST "$BASE/ai/chat" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"上线前如何做金丝雀或小流量验证？","topK":5}' | jq '{answer, sources}'
+
+# 3. 问人
+curl -s -X POST "$BASE/ai/chat" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"发布出故障应该找谁？李明负责什么？","topK":5}' | jq '{answer, sources}'
+```
+
+只看召回、不调 LLM：`POST /rag/search`，body 为 `{"query":"...","topK":5}`。
