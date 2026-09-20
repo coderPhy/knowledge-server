@@ -190,7 +190,7 @@ services:
 
   # Neo4j — KG 知识图谱
   neo4j:
-    image: neo4j:latest
+    image: neo4j:2026.04.0
     container_name: knowledge_hub_neo4j
     ports:
       - "7474:7474"   # Web 管理界面
