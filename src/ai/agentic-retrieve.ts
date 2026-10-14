@@ -2,6 +2,7 @@ import type { AuthUser } from '../auth/auth-user.interface';
 import type { ChunkHit } from '../pipeline/types/pipeline.types';
 import type { ChatQueryRewriteService, HitGrade } from './chat-query-rewrite.service';
 import type { HybridRetrievalService } from './hybrid-retrieval.service';
+import { withObservation } from '../observability/langfuse';
 
 /** 推给前端 data-eval；ok 表示资料切题，不是「有条数」。 */
 export type RetrieveEvalReason =
@@ -34,6 +35,15 @@ export type RetrieveEval = {
   retryQuery?: string;
 };
 
+/** 非流式改写循环的返回；rawHits / retrieveCount 给评测快照用。 */
+export type RetrieveLoopResult = {
+  hits: ChunkHit[];
+  rawHits: ChunkHit[];
+  eval: RetrieveEval;
+  usedQuery: string;
+  retrieveCount: number;
+};
+
 export type GradedRetrieve = {
   /** 原始命中，给改写器用；不切题时不要当制度依据 */
   rawHits: ChunkHit[];
@@ -63,33 +73,46 @@ export async function retrieveAndGrade(opts: {
   const displayQuery = retried ? opts.previousQuery || usedQuery : usedQuery;
   const retryQuery = retried ? usedQuery : undefined;
 
-  try {
-    const rawHits = await opts.retrieval.retrieve(usedQuery, opts.topK, opts.user);
-    const grade = await opts.rewrite.gradeHits(opts.question, rawHits);
-    return {
-      rawHits,
-      hits: grade.ok ? rawHits : [],
-      grade,
-      eval: toEval(grade, displayQuery, retried, retryQuery),
-      usedQuery,
-    };
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    return {
-      rawHits: [],
-      hits: [],
-      grade: { ...EMPTY_GRADE, text: `检索失败：${detail}` },
-      eval: {
-        ok: false,
-        reason: 'error',
-        text: retried ? '改写后再次检索失败' : '检索失败',
-        retried,
-        query: displayQuery,
-        retryQuery,
-      },
-      usedQuery,
-    };
-  }
+  return withObservation('retrieve-and-grade', async (update) => {
+    try {
+      const rawHits = await opts.retrieval.retrieve(usedQuery, opts.topK, opts.user);
+      const grade = await opts.rewrite.gradeHits(opts.question, rawHits);
+      const result = {
+        rawHits,
+        hits: grade.ok ? rawHits : [],
+        grade,
+        eval: toEval(grade, displayQuery, retried, retryQuery),
+        usedQuery,
+      };
+      update({
+        input: { query: usedQuery, retried },
+        output: {
+          n: rawHits.length,
+          titles: rawHits.map((h) => h.documentTitle),
+          eval: result.eval,
+        },
+      });
+      return result;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const failed = {
+        rawHits: [] as ChunkHit[],
+        hits: [] as ChunkHit[],
+        grade: { ...EMPTY_GRADE, text: `检索失败：${detail}` },
+        eval: {
+          ok: false,
+          reason: 'error' as const,
+          text: retried ? '改写后再次检索失败' : '检索失败',
+          retried,
+          query: displayQuery,
+          retryQuery,
+        },
+        usedQuery,
+      };
+      update({ input: { query: usedQuery }, output: { error: detail } });
+      return failed;
+    }
+  });
 }
 
 /**
@@ -105,7 +128,7 @@ export async function retrieveUntilRelevant(opts: {
   rewrite: ChatQueryRewriteService; // 评估切题 + 不足时改写
   onEval?: (data: RetrieveEval) => void; // 每次评估后回调（流式可推过程条）
   onRewrite?: (retryQuery: string) => void; // 即将用新词再查时回调
-}): Promise<{ hits: ChunkHit[]; eval: RetrieveEval; usedQuery: string }> {
+}): Promise<RetrieveLoopResult> {
   const first = await retrieveAndGrade({
     question: opts.question,
     query: opts.query,
@@ -116,7 +139,7 @@ export async function retrieveUntilRelevant(opts: {
   });
   opts.onEval?.(first.eval);
   if (first.eval.ok || first.eval.reason === 'error') {
-    return { hits: first.hits, eval: first.eval, usedQuery: first.usedQuery };
+    return { hits: first.hits, rawHits: first.rawHits, eval: first.eval, usedQuery: first.usedQuery, retrieveCount: 1 };
   }
 
   const retryQuery = await opts.rewrite.rewriteAfterRetrieve(
@@ -126,7 +149,7 @@ export async function retrieveUntilRelevant(opts: {
     first.rawHits,
   );
   if (!retryQuery) {
-    return { hits: [], eval: first.eval, usedQuery: first.usedQuery };
+    return { hits: [], rawHits: first.rawHits, eval: first.eval, usedQuery: first.usedQuery, retrieveCount: 1 };
   }
 
   opts.onRewrite?.(retryQuery);
@@ -141,7 +164,7 @@ export async function retrieveUntilRelevant(opts: {
     previousQuery: first.usedQuery,
   });
   opts.onEval?.(second.eval);
-  return { hits: second.hits, eval: second.eval, usedQuery: second.usedQuery };
+  return { hits: second.hits, rawHits: second.rawHits, eval: second.eval, usedQuery: second.usedQuery, retrieveCount: 2 };
 }
 
 function toEval(

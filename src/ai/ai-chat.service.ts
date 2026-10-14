@@ -22,8 +22,24 @@ import { accessFromUser } from '../document/document-access';
 import { dbRowsToMessages } from './chat-memory.util';
 import type { AuthUser } from '../auth/auth-user.interface';
 import type { ChatSource } from './chat.types';
+import type { ChatEvalHit, ChatEvalSnapshot } from './eval/eval.types';
+import { withObservation, withTraceAttrs } from '../observability/langfuse';
 
 export type { ChatSource } from './chat.types';
+
+export type ChatOptions = {
+  /** 默认 true：写入会话与记忆。评测脚本关。 */
+  persist?: boolean;
+  /** 附带评测快照 */
+  includeEval?: boolean;
+};
+
+export type ChatResult = {
+  sessionId: string | null;
+  answer: string;
+  sources: ChatSource[];
+  eval?: ChatEvalSnapshot;
+};
 
 const EXCERPT_LEN = 200; // 引用摘录截断长度（字符）
 const CITATION_RE = /\[(\d+)\]/g; // 回答里的 [1]、[2] 引用编号
@@ -80,7 +96,10 @@ export class AiChatService {
     topK = 5,
     user?: AuthUser,
     sessionId?: string,
-  ) {
+    options?: ChatOptions,
+  ): Promise<ChatResult> {
+    const persist = options?.persist !== false;
+    const includeEval = Boolean(options?.includeEval);
     const trimmed = question.trim();
     if (!trimmed) {
       return {
@@ -90,6 +109,37 @@ export class AiChatService {
       };
     }
 
+    return withObservation('ai-chat', (update) =>
+      withTraceAttrs(
+        {
+          userId: user?.userId,
+          sessionId,
+          tags: ['ai-chat', 'agentic-rag'],
+        },
+        () =>
+          this.runChatTurn({
+            trimmed,
+            topK,
+            user,
+            sessionId,
+            persist,
+            includeEval,
+            update,
+          }),
+      ),
+    );
+  }
+
+  private async runChatTurn(opts: {
+    trimmed: string;
+    topK: number;
+    user?: AuthUser;
+    sessionId?: string;
+    persist: boolean;
+    includeEval: boolean;
+    update: (fields: Record<string, unknown>) => void;
+  }): Promise<ChatResult> {
+    const { trimmed, topK, user, sessionId, persist, includeEval, update } = opts;
     const history = user
       ? await this.loadWorkingHistory(user.userId, sessionId)
       : [];
@@ -130,12 +180,58 @@ export class AiChatService {
         ? await this.webSearch.search(searchQuery)
         : undefined;
     const memHits = await memHitsP;
+
+    const snapshot = (answer: string): ChatEvalSnapshot => ({
+      question: trimmed,
+      answer,
+      intent: plan.intent,
+      allowRetrieve: plan.allowRetrieve,
+      allowGraph: plan.allowGraph,
+      allowWeb: plan.allowWeb,
+      graphQueries: plan.graphQueries,
+      retrieveCount: retrieved?.retrieveCount ?? 0,
+      rewritten: Boolean(retrieved?.eval.retried),
+      retryQuery: retrieved?.eval.retryQuery,
+      retrieveEval: retrieved?.eval,
+      graphUsed: Boolean(graphHit),
+      webUsed: Boolean(web),
+      rawHits: (retrieved?.rawHits ?? []).map(toEvalHit),
+      gradedHits: hits.map(toEvalHit),
+      webSnippet: web
+        ? web.error ||
+          web.items.map((i) => `${i.title}\n${i.url}\n${i.snippet}`).join('\n')
+        : '',
+    });
+
+    const finish = (
+      answer: string,
+      sources: ChatSource[],
+      sid: string | null,
+    ): ChatResult => {
+      const evalSnap = snapshot(answer);
+      update({
+        input: { question: trimmed },
+        output: { answer, intent: plan.intent, eval: retrieved?.eval },
+        metadata: {
+          intent: plan.intent,
+          retrieveCount: evalSnap.retrieveCount,
+          hitTitles: evalSnap.rawHits.map((h) => h.documentTitle),
+        },
+      });
+      return {
+        sessionId: sid,
+        answer,
+        sources,
+        ...(includeEval ? { eval: evalSnap } : {}),
+      };
+    };
+
     if (plan.intent === 'kb' && kbInsufficient && !hasGraph) {
       const empty = {
         answer: '知识库里没有相关内容。',
         sources: [] as ChatSource[],
       };
-      const session = user
+      const session = persist && user
         ? await this.sessions.appendTurn(
             user.userId,
             sessionId,
@@ -144,7 +240,7 @@ export class AiChatService {
             empty.sources,
           )
         : null;
-      if (user && session) {
+      if (persist && user && session) {
         await this.shortMemory.appendTurn(
           user.userId,
           session.id,
@@ -159,7 +255,11 @@ export class AiChatService {
           empty.answer,
         );
       }
-      return { sessionId: session?.id ?? sessionId ?? null, ...empty };
+      return finish(
+        empty.answer,
+        empty.sources,
+        session?.id ?? sessionId ?? null,
+      );
     }
 
     if (!this.llm) {
@@ -195,7 +295,7 @@ export class AiChatService {
       `RAG 对话完成：hits=${hits.length}, cited=${sources.length}, answerLength=${answer.length}`,
     );
 
-    const session = user
+    const session = persist && user
       ? await this.sessions.appendTurn(
           user.userId,
           sessionId,
@@ -205,7 +305,7 @@ export class AiChatService {
         )
       : null;
 
-    if (user && session) {
+    if (persist && user && session) {
       await this.shortMemory.appendTurn(
         user.userId,
         session.id,
@@ -221,7 +321,7 @@ export class AiChatService {
       );
     }
 
-    return { sessionId: session?.id ?? sessionId ?? null, answer, sources };
+    return finish(answer, sources, session?.id ?? sessionId ?? null);
   }
 
   private async loadWorkingHistory(
@@ -319,5 +419,16 @@ export class AiChatService {
     prompt += '若资料不足以回答，明确说不知道。回答简洁，必要时列出条目。';
     return prompt;
   }
+}
+
+function toEvalHit(hit: ChunkHit): ChatEvalHit {
+  const text = hit.content.replace(/\s+/g, ' ').trim();
+  return {
+    documentId: hit.documentId,
+    documentTitle: hit.documentTitle,
+    heading: hit.heading,
+    score: hit.score,
+    excerpt: text.length > 400 ? `${text.slice(0, 400)}...` : text,
+  };
 }
 
