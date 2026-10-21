@@ -13,9 +13,9 @@ TOKEN=$(curl -s -X POST "$BASE/auth/login" \
 
 ## 0. 上传文件并解析为 Markdown（创建草稿）
 
-支持格式：`pdf` / `docx` / `xlsx` / `pptx` / `txt` / `md`
+支持格式：`pdf` / 图片（`png` `jpg` `jpeg` `jp2` `webp` `gif` `bmp`）/ `doc` `docx` / `ppt` `pptx` / `xls` `xlsx` / `txt` / `md`。单文件最大 200MB。
 
-依赖：RustFS（`docker compose up -d rustfs`）。PDF 内嵌图会上传到 RustFS，并在正文中插入 `![](url)`；原文件也会上传，返回 `fileUrl`。
+Office、PDF、图片走 MinerU 精准解析。结果 zip 里的图片会上传到 RustFS，并替换正文中的 `images/...` 地址；原文件也会上传，返回 `fileUrl`。需配置 `MINERU_API_TOKEN` 与 RustFS。
 
 ```bash
 curl -s -X POST "$BASE/documents/upload/parse" \

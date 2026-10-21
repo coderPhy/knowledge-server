@@ -378,11 +378,7 @@ export class AiChatService {
     return hits
       .map((src, i) => {
         const heading = src.heading ? ` / ${src.heading}` : '';
-        const snippet =
-          src.content.length > 800
-            ? `${src.content.slice(0, 800)}...`
-            : src.content;
-        return `[${i + 1}] ${src.documentTitle}${heading}\n${snippet}`;
+        return `[${i + 1}] ${src.documentTitle}${heading}\n${src.content}`;
       })
       .join('\n\n');
   }
