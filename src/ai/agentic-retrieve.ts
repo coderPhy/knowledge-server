@@ -75,7 +75,9 @@ export async function retrieveAndGrade(opts: {
 
   return withObservation('retrieve-and-grade', async (update) => {
     try {
+      // 混合检索返回的chunk
       const rawHits = await opts.retrieval.retrieve(usedQuery, opts.topK, opts.user);
+      // 判断是否切题，能否支撑回答
       const grade = await opts.rewrite.gradeHits(opts.question, rawHits);
       const result = {
         rawHits,

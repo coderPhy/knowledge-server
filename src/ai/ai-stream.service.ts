@@ -496,6 +496,7 @@ export class AiStreamService {
           data: { sessionId: session.id },
         });
 
+        // 从redis取短期记忆，没有的话就去postgresql取，同时存redis
         const history = await this.loadWorkingHistory(user.userId, session.id);
         persistHistory = history;
 
@@ -503,11 +504,13 @@ export class AiStreamService {
           type: 'data-status',
           data: { stage: 'intent', text: '正在识别意图…' },
         });
+        // 获取长期记忆 用户 和 用户 + 会话
         const memHitsP = this.longMemory.search(
           user.userId,
           session.id,
           question,
         );
+        // 意图识别 + 改写 + 提取图谱实体
         const plan = await this.queryRewrite.classify(question, history);
         writer.write({
           type: 'data-intent',

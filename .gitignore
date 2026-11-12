@@ -2,4 +2,5 @@ node_modules/
 .env
 dist/
 volumes/
-docs/
+docs/*
+!docs/本地启动.md
