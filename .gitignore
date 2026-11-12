@@ -4,3 +4,4 @@ dist/
 volumes/
 docs/*
 !docs/本地启动.md
+.env.example
